@@ -2,8 +2,7 @@ import {
   WebAuth
 } from 'auth0-js';
 
-import 'auth0-lock'; // this import seem to be needed
-import Auth0LockPasswordless from 'auth0-lock/lib/passwordless';
+import { Auth0LockPasswordless } from 'auth0-lock';
 
 const ACCESS_TOKEN_KEY = 'access_token';
 
@@ -16,7 +15,8 @@ export default class Auth {
       }
     );
     this.lock.on('authorization_error', error => {
-      this._setAuthorizationError(error)
+      console.log('authorization_error:', error);
+      this._setAuthorizationError(error.errorDescription || error.error)
     });
     this.lock.on('authenticated', authResult => {
       console.log('authResult:', authResult)
