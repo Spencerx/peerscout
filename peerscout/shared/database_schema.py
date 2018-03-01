@@ -15,7 +15,7 @@ from sqlalchemy.dialects import postgresql
 
 Base = declarative_base()
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 11
 
 class SchemaVersion(Base):
   __tablename__ = "schema_version"
@@ -32,6 +32,10 @@ class ImportProcessed(Base):
 
 class Person(Base):
   __tablename__ = "person"
+
+  class Status:
+    ACTIVE = 'Active'
+    INACTIVE = 'Inactive'
 
   person_id = Column(String, primary_key=True)
   title = Column(String)
@@ -57,6 +61,12 @@ class PersonDatesNotAvailable(Base):
   start_date = Column(DateTime, primary_key=True)
   end_date = Column(DateTime, primary_key=True)
 
+class PersonKeyword(Base):
+  __tablename__ = "person_keyword"
+
+  person_id = create_person_id_fk(primary_key=True)
+  keyword = Column(String, primary_key=True)
+
 class PersonMembership(Base):
   __tablename__ = "person_membership"
 
@@ -65,6 +75,12 @@ class PersonMembership(Base):
   person_id = create_person_id_fk(primary_key=True)
   member_type = Column(String, primary_key=True)
   member_id = Column(String, primary_key=True)
+
+class PersonRole(Base):
+  __tablename__ = "person_role"
+
+  person_id = create_person_id_fk(primary_key=True)
+  role = Column(String, primary_key=True)
 
 class PersonSubjectArea(Base):
   __tablename__ = "person_subject_area"
@@ -214,7 +230,9 @@ TABLES = [
   ImportProcessed,
   Person,
   PersonDatesNotAvailable,
+  PersonKeyword,
   PersonMembership,
+  PersonRole,
   PersonSubjectArea,
   Manuscript,
   ManuscriptVersion,

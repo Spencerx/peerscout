@@ -1,11 +1,15 @@
+/build
 /client/node_modules
 /client/dist
 /client/.inject-html
+/.coverage
 /.data
 /venv
 /.vscode
+/.pytest_cache
 /app.cfg
 /logs
+/*.egg-info
 
 .cache
 __pycache__

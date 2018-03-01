@@ -22,12 +22,17 @@ from .dataNormalisationUtils import normalise_subject_area
 
 from ..shared.database import connect_managed_configured_database
 
-NAME = 'importDataToDatabase'
-
 # The data version is similar to the schema version,
 # but rather means that the way the data should be interpreted has changed
 # (and therefore previously processed files may need to be processed again)
 DATA_VERSION = 8
+
+class NoteTypes:
+  # Note: the keywords seem to be actually stored in 'Pn Area Of Expertise', not 'Pn Keywords'
+  KEYWORDS = 'Pn Area Of Expertise'
+
+def get_logger():
+  return logging.getLogger(__name__)
 
 def auto_convert(name, value):
   if name.endswith('-date'):
@@ -98,7 +103,25 @@ def find_unknown_paths(doc, known_paths):
 def sanity_check_unknown_paths(doc, known_paths):
   unknown_paths = find_unknown_paths(doc, known_paths)
   if len(unknown_paths) > 0:
-    logging.getLogger(NAME).warning("unknown_paths: %s", unknown_paths)
+    get_logger().warning("unknown_paths: %s", unknown_paths)
+
+def parse_keyword_str(keyword_str):
+  if not keyword_str:
+    return []
+  return (
+    keyword for keyword in
+    (unescape_and_strip_tags_if_str(s.strip()) for s in keyword_str.split(','))
+    if keyword and keyword.lower() != 'n/a' and keyword[0].isalpha()
+  )
+
+def extract_person_keywords_from_person_node(person_node, person_id):
+  for note in person_node.findall('./notes/note[note-type="%s"]' % NoteTypes.KEYWORDS):
+    keyword_str = note.find('./note-text').text
+    for keyword in parse_keyword_str(keyword_str):
+      yield {
+        'person_id': person_id,
+        'keyword': keyword
+      }
 
 version_copy_paths = {
   'manuscript_author': ['authors/author'],
@@ -120,8 +143,15 @@ person_copy_paths = {
   'person_dates_not_available': ['dates-not-available/dna'],
   'person-addresses': ['addresses/address'],
   'person-notes': ['notes/note'],
-  'person-roles': ['roles/role'],
+  'person_role': ['roles/role'],
   'person_membership': ['memberships/membership']
+}
+
+person_custom_extractors_by_table_name = {
+  # defer call to make mocking easier
+  'person_keyword': lambda *args, **kwargs: (
+    extract_person_keywords_from_person_node(*args, **kwargs)
+  )
 }
 
 xml_copy_paths = {
@@ -146,10 +176,21 @@ default_field_mapping_by_table_name = {
     'start_date': 'dna-start-date',
     'end_date': 'dna-end-date'
   },
+  # person_keyword use a custom extractor, the mapping here is just necessary
+  # to keep the overall structure of being able to pass the mapping
+  # (may be removed in the future)
+  'person_keyword': {
+    'person_id': 'person_id',
+    'keyword': 'keyword',
+  },
   'person_membership': {
     'person_id': 'person-id',
     'member_type': 'member-type',
     'member_id': 'member-id'
+  },
+  'person_role': {
+    'person_id': 'person-id',
+    'role': 'role-type',
   },
   'manuscript': {
     'manuscript_id': 'manuscript-no',
@@ -306,14 +347,14 @@ default_list_transformer_by_table_name = {
   # 'manuscript_stage': filter_duplicate_stage_use_highest_trigger_by
 }
 
-all_version_table_names = [
-  'manuscript_version',
-  'emails_meta'
-] + [table_name for table_name, xpaths in version_copy_paths.items()]
+all_version_table_names = (
+  ['manuscript_version', 'emails_meta'] + list(version_copy_paths.keys())
+)
 
-all_persons_table_names = [
-  'person'
-] + [table_name for table_name, xpaths in person_copy_paths.items()]
+all_persons_table_names = (
+  ['person'] + list(person_copy_paths.keys()) +
+  list(person_custom_extractors_by_table_name.keys())
+)
 
 def build_known_xml_paths():
   known_paths = set([
@@ -490,6 +531,9 @@ def convert_xml(doc, tables, manuscript_number, field_mapping_by_table_name):
           field_mapping=field_mapping_by_table_name[table_name],
           list_transformer_func=get_combined_list_transformer(table_name),
           exclude=known_person_xml_paths)
+    for table_name, extractor in person_custom_extractors_by_table_name.items():
+      for props in extractor(person, person_id=person_key):
+        tables[table_name].append(props)
 
   # sanity check (to verify that we haven't missed any tags)
   sanity_check_unknown_paths(doc, known_xml_paths)
@@ -561,18 +605,18 @@ def convert_zip_file(
   zip_filename, zip_stream, db, field_mapping_by_table_name,
   early_career_researcher_person_ids, export_emails=False):
 
-  logger = logging.getLogger(NAME)
+  logger = get_logger()
 
   processed = db.import_processed.get(zip_filename)
   if processed is not None and processed.version == DATA_VERSION:
     return
 
-  table_names = set([
+  table_names = {
     'person',
     'manuscript_email_meta',
     'manuscript',
     'manuscript_version'
-  ])
+  } | person_custom_extractors_by_table_name.keys()
   if export_emails:
     table_names.add('emails')
   for copy_paths in xml_copy_paths.values():
@@ -690,7 +734,7 @@ def main():
 
     process_files_in_directory_or_zip(source, process_zip, ext=".zip")
 
-    logging.getLogger(NAME).info("done")
+    get_logger().info("done")
 
 if __name__ == "__main__":
   from ..shared.logging_config import configure_logging

@@ -19,7 +19,8 @@ from .database_views import create_views
 
 from .app_config import get_app_config
 
-NAME = 'database'
+def get_logger():
+  return logging.getLogger(__name__)
 
 class CustomJSONEncoder(JSONEncoder):
   def default(self, obj): # pylint: disable=E0202
@@ -181,10 +182,9 @@ class Entity(object):
     return self.session.query(self.table).count()
 
 class Database(object):
-  def __init__(self, engine):
-    self.logger = logging.getLogger(NAME)
+  def __init__(self, engine, autocommit=False):
     self.engine = engine
-    self.session = sessionmaker(engine)()
+    self.session = sessionmaker(engine, autocommit=autocommit)()
     self.views = create_views(engine.dialect.name)
     self.tables = {
       t.__tablename__: Entity(self.session, t)
@@ -205,19 +205,19 @@ class Database(object):
       self.engine.execute('DROP VIEW IF EXISTS {}'.format(
         view.__tablename__
       ))
-    self.commit()
+    self.commit_if_not_auto_commit()
 
   def create_views(self):
     for view in self.views:
-      self.logger.info('creating view %s', view.__tablename__)
+      get_logger().info('creating view %s', view.__tablename__)
       self.engine.execute('CREATE VIEW {} AS {}'.format(
         view.__tablename__,
         view.__query__
       ))
-    self.commit()
+    self.commit_if_not_auto_commit()
 
   def _shallow_migrate_schema(self):
-    self.logger.info('shallow migrate schema (no data modification)')
+    get_logger().info('shallow migrate schema (no data modification)')
     Base.metadata.create_all(self.engine)
     self.drop_views()
     self.create_views()
@@ -225,7 +225,7 @@ class Database(object):
   def _full_migrate_schema(self):
     self.drop_views()
     # the commit is necessary to prevent freezing
-    self.commit()
+    self.commit_if_not_auto_commit()
     Base.metadata.drop_all(self.engine)
     Base.metadata.create_all(self.engine)
     self.create_views()
@@ -234,7 +234,7 @@ class Database(object):
       schema_version_id=DEFAULT_SCHEMA_VERSION_ID,
       version=SCHEMA_VERSION
     )
-    self.commit()
+    self.commit_if_not_auto_commit()
 
   def update_schema(self):
     version = self.get_current_schema_version()
@@ -242,14 +242,14 @@ class Database(object):
       self._shallow_migrate_schema()
     else:
       if version is None:
-        self.logger.info("creating schema")
+        get_logger().info("creating schema")
       else:
-        self.logger.info(
+        get_logger().info(
           "schema out of sync, re-creating schema (was: %s, required: %s)",
           version.version if version else None, SCHEMA_VERSION
         )
       self._full_migrate_schema()
-      self.logger.info("done")
+      get_logger().info("done")
 
   def sorted_table_names(self):
     return [t.name for t in Base.metadata.sorted_tables]
@@ -260,6 +260,26 @@ class Database(object):
   def commit(self):
     self.session.commit()
 
+  def is_auto_commit(self):
+    return self.session.autocommit
+
+  def commit_if_not_auto_commit(self):
+    if not self.is_auto_commit():
+      self.commit()
+
+  @contextmanager
+  def semi_transaction(self):
+    if self.is_auto_commit():
+      with self.session.begin():
+        yield self.session
+    else:
+      try:
+        yield self.session
+        self.session.commit()
+      except:
+        self.session.rollback()
+        raise
+
   def close(self):
     self.session.close()
 
@@ -269,11 +289,11 @@ class Database(object):
   def __getattr__(self, name):
     return self.tables[name]
 
-def connect_database(*args, **kwargs):
+def connect_database(*args, autocommit=False, **kwargs):
   engine = db_connect(*args, **kwargs)
-  return Database(engine)
+  return Database(engine, autocommit=autocommit)
 
-def connect_configured_database():
+def connect_configured_database(autocommit=False):
   config = get_app_config()
   db_config = config['database']
   name = db_config['name']
@@ -288,11 +308,39 @@ def connect_configured_database():
     host=db_host,
     port=db_port,
     user=db_user,
-    password=db_password
+    password=db_password,
+    autocommit=autocommit
   )
 
 @contextmanager
-def connect_managed_configured_database():
-  db = connect_configured_database()
+def connect_managed_configured_database(autocommit=False):
+  db = connect_configured_database(autocommit=autocommit)
   yield db
   db.close()
+
+@contextmanager
+def empty_in_memory_database(autocommit=False):
+  engine = sqlalchemy.create_engine('sqlite://', echo=False)
+  get_logger().debug("engine driver: %s", engine.driver)
+  db = Database(engine, autocommit=autocommit)
+  db.update_schema()
+  yield db
+  db.close()
+
+def insert_dataset(db, dataset):
+  sorted_table_names = db.sorted_table_names()
+  unknown_table_names = set(dataset.keys()) - set(sorted_table_names)
+  if len(unknown_table_names) > 0:
+    raise Exception("unknown table names: {}".format(unknown_table_names))
+
+  for table_name in sorted_table_names:
+    if table_name in dataset:
+      get_logger().debug("data %s:\n%s", table_name, dataset[table_name])
+      db[table_name].create_list(dataset[table_name])
+  db.commit_if_not_auto_commit()
+
+@contextmanager
+def populated_in_memory_database(dataset, **kwargs):
+  with empty_in_memory_database(**kwargs) as db:
+    insert_dataset(db, dataset)
+    yield db
